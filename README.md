@@ -1,5 +1,5 @@
-# Projectseptember
-Rnaseq pipeline
+# RNA-seq Analysis Pipeline
+Marianna Mercadante
 ## Docker: R Environment for Data Analysis
 
 To ensure a consistent and reproducible environment for data analysis, it is recommended to use a Docker container. Docker allows you to create a virtual environment that contains all the necessary software and dependencies. This helps avoid issues related to different versions of R and packages, ensuring that your analysis runs smoothly even years later.
@@ -119,5 +119,50 @@ C:/Users/Marianna/Desktop/progetto/       (container root, e.g. /)
 ├── Dockerfile
 ├── README.md
 ```
+## Analysis Description
+The bioinformatics analysis focuses on identifying and characterizing differentially expressed genes in two RNA-seq datasets (GSE244485 and GSE244486) that show a clear batch effect.
+
+The key steps of the analysis are as follows:
+* **Gene Annotation**:
+  * The `GTF file` (`Homo_sapiens.GRCh38.114.gtf.gz`) is imported to create a `GenomicRanges` object.
+  * This object contains the genomic coordinates and annotations for all genes, which are used in downstream analyses.
+* **Data Preparation**:
+  * The raw count data from both datasets are combined into a single matrix.
+  * Sample information (condition, batch) is loaded.
+* **Batch Effect Correction**:
+  * A Principal Component Analysis (PCA) is performed on the raw data to visualize the batch effect.
+  * The batch effect is corrected using two different strategies:
+    1. Including the batch as a variable in the analysis model (with `DESeq2`)
+    2. Using the ComBat-seq algorithm to directly remove the batch effect from the data
+  * A new PCA is run on the corrected data to verify the effectiveness of the batch removal.
+* **Differential Expression (DE) Analysis**:
+  * DE analysis is conducted using `DESeq2` on the data processed by both correction strategies.
+  * The results (in terms of DEGs) from the two methods are compared, and their overlap is visualized with Venn diagrams.
+* **Clustering and Heatmaps**:
+  * Heatmaps are generated to visualize the expression profiles of genes unique to each correction method.
+  * A dendrogram and a heatmap of samples based on the top 500 most variable genes are created to show how samples cluster based on their conditions.
+* **Genomic Proximity**:
+  * An additional analysis is performed to identify pairs of differentially expressed genes, one coding and one non-coding, that are located within ±5kb of each other.
+  * Violin plots are generated to compare the expression levels of the identified coding and non-coding genes.
+
+## Results and Outputs
+The script generates several files and plots in the outputs directory:
+ * `venn_infected_vs_mock.png`: Comparison of DE genes found by the two methods for the "infected" condition.
+ * `venn_bystander_vs_mock.png`: Comparison of DE genes for the "bystander" condition.
+ * `heatmap_*.png`: Heatmaps showing gene expression profiles.
+ * `ARI_comparison_500genes_samples.csv`: A table with Adjusted Rand Index (ARI) values for various clustering metrics.
+ * `ARI_boxplot_*.png`: Boxplots visualizing the distribution of ARI values.
+ * `DE_coding_noncoding_pairs_investigation.csv`: A table listing pairs of differentially expressed coding and non-coding genes that are in close proximity.
+ * `violinplot_coding_vs_noncoding_*.png`: Violin plots showing the expression levels of coding vs. non-coding genes.
+
+
+
+
+
+
+
+
+
+
 
 
