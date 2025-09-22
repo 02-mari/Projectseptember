@@ -93,7 +93,7 @@ docker build -t mio_progetto_r:latest .
 
 `.` specifies that the Dockerfile is in the current directory.
 
-It may take a few minutes as it downloads R and all required packages. Docker caches layers, so rebuilding later will be faster if the Dockerfile hasnât changed.
+It may take a few minutes as it downloads R and all required packages. Docker caches layers, so rebuilding later will be faster if the Dockerfile hasn't changed.
 
 ### Running a Docker Container
 
