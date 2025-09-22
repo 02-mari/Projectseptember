@@ -115,7 +115,7 @@ Local machine (your computer)              Docker container
 ─────────────────────────────             ─────────────────────────────
 C:/Users/Marianna/Desktop/progetto/       (container root, e.g. /)
 ├── data/        <───────────────┐       /data/       # volume mapped to local data/
-├── outputs/     <───────────────┘       /results/    # volume mapped to local results/
+├── outputs/     <───────────────┘       /results/    # volume mapped to local outputs/
 ├── Dockerfile
 ├── README.md
 ```
