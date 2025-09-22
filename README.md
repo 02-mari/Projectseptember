@@ -1,5 +1,6 @@
 # RNA-seq Analysis Pipeline
-Marianna Mercadante
+This project contains an R script for analyzing RNA sequencing (RNA-seq) data. The analysis includes gene annotation, batch effect correction, the identification of differentially expressed genes (DEGs), and an exploration of their genomic proximity.
+
 ## Docker: R Environment for Data Analysis
 
 To ensure a consistent and reproducible environment for data analysis, it is recommended to use a Docker container. Docker allows you to create a virtual environment that contains all the necessary software and dependencies. This helps avoid issues related to different versions of R and packages, ensuring that your analysis runs smoothly even years later.
