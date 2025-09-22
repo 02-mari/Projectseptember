@@ -122,10 +122,11 @@ C:/Users/Marianna/Desktop/progetto/       (container root, e.g. /)
 ```
 ## Analysis Description
 The bioinformatics analysis focuses on identifying and characterizing differentially expressed genes in two RNA-seq datasets (GSE244485 and GSE244486) that show a clear batch effect.
+[download the datasates here](https://www.ncbi.nlm.nih.gov/gds/)
 
 The key steps of the analysis are as follows:
 * **Gene Annotation**:
-  * The `GTF file` (`Homo_sapiens.GRCh38.114.gtf.gz`) is imported to create a `GenomicRanges` object.
+  * The `GTF file` (`Homo_sapiens.GRCh38.114.gtf.gz`) is imported to create a `GenomicRanges` object. [download here](https://ftp.ensembl.org/pub/release-114/gtf/homo_sapiens/Homo_sapiens.GRCh38.114.gtf.gz)
   * This object contains the genomic coordinates and annotations for all genes, which are used in downstream analyses.
 * **Data Preparation**:
   * The raw count data from both datasets are combined into a single matrix.
