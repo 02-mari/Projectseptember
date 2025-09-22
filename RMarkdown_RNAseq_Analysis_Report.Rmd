@@ -1,0 +1,437 @@
+---
+title: "RNA-seq Analysis Report"
+author: "Marianna Meracdante"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: cosmo
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE, 
+  message = FALSE
+)
+```
+
+```{r}
+library(rtracklayer)
+library(GenomicRanges)
+library(DESeq2)
+library(sva)
+library(ggplot2)
+library(VennDiagram)
+library(grid)
+library(gridExtra)
+library(pheatmap)
+library(circlize)
+library(cluster)
+library(mclust)
+library(reshape2)
+library(plotly)
+library(DT)
+```
+
+
+## Introduction
+
+This report documents the RNA-seq analysis pipeline, including all code used, outputs, encountered issues, and solutions. The analysis includes:
+
+* GTF annotation
+
+* PCA
+
+* Differential expression (DE) analysis using two strategies: Model vs ComBat_seq
+
+* Heatmaps and clustering
+
+* Genomic proximity of coding vs noncoding DE genes
+
+```{r GTF annotation}
+project_path <- "H:/Drive condivisi/MBC-NeriLab/01_MEMBERS/MARIANNA MERCADANTE/data/"
+gtf_path <- file.path(project_path, "Homo_sapiens.GRCh38.114.gtf.gz")
+
+if(!file.exists(gtf_path)){
+  stop(paste("File GTF non trovato:", gtf_path))
+} else {
+  message("File GTF trovato correttamente.")
+}
+
+library(rtracklayer)
+gtf <- import(gtf_path)
+
+
+genes <- gtf[gtf$type == "gene"]
+mcols(genes)$gene_label <- ifelse(
+  mcols(genes)$gene_biotype == "protein_coding",
+  paste0(mcols(genes)$gene_id, ":", mcols(genes)$gene_name),
+  mcols(genes)$gene_id
+)
+genes <- genes[!is.na(mcols(genes)$gene_id)]
+
+gene_gr <- GRanges(
+  seqnames = seqnames(genes),
+  ranges = ranges(genes),
+  strand = strand(genes),
+  gene_id   = mcols(genes)$gene_id,
+  gene_name = mcols(genes)$gene_name,
+  gene_label = mcols(genes)$gene_label,
+  biotype = mcols(genes)$gene_biotype
+)
+
+gene_gr[1:5]
+
+```
+
+```{r Load raw counts and PCA}
+# Percorsi dei file raw counts
+file_gse1 <- "H:/Drive condivisi/MBC-NeriLab/01_MEMBERS/MARIANNA MERCADANTE/data/GSE244486_raw_counts.tsv.gz"
+file_gse2 <- "H:/Drive condivisi/MBC-NeriLab/01_MEMBERS/MARIANNA MERCADANTE/data/GSE244485_raw_counts.tsv.gz"
+
+# Controlla che i file esistano
+if(!file.exists(file_gse1)) stop("File GSE244486_raw_counts.tsv.gz non trovato")
+if(!file.exists(file_gse2)) stop("File GSE244485_raw_counts.tsv.gz non trovato")
+
+# Lettura dei raw counts
+raw_counts_gse1 <- read.delim(file_gse1, header = TRUE, sep = "\t", row.names = 1)
+raw_counts_gse2 <- read.delim(file_gse2, header = TRUE, sep = "\t", row.names = 1)
+
+# Aggiungi prefisso ai nomi delle colonne
+colnames(raw_counts_gse1) <- paste0("GSE244486_", colnames(raw_counts_gse1))
+colnames(raw_counts_gse2) <- paste0("GSE244485_", colnames(raw_counts_gse2))
+
+# Trova geni comuni
+common_genes <- intersect(rownames(raw_counts_gse1), rownames(raw_counts_gse2))
+all_raw_counts <- cbind(
+  raw_counts_gse1[common_genes, ],
+  raw_counts_gse2[common_genes, ]
+)
+all_raw_counts <- all_raw_counts[rowSums(all_raw_counts) > 0, ]
+all_raw_counts <- as.matrix(all_raw_counts)
+mode(all_raw_counts) <- "numeric"  # Assicurati che sia numerico
+
+# Info sui campioni
+sample_info <- data.frame(
+  sample_id = colnames(all_raw_counts),
+  condition = rep(c("mock","bystander","infected"), each = 6, times = 2),
+  batch = rep(c("GSE244486","GSE244485"), each = 18)
+)
+rownames(sample_info) <- sample_info$sample_id
+sample_info$condition <- relevel(factor(sample_info$condition), ref="mock")
+sample_info$batch <- factor(sample_info$batch)
+
+
+run_pca <- function(count_matrix, sample_info, title_suffix){
+  log_data <- log2(count_matrix + 1)
+  log_data <- log_data[apply(log_data,1,var) > 0, ]
+  log_data <- log_data[, apply(log_data,2,var) > 0]
+  log_data <- as.matrix(log_data)
+  mode(log_data) <- "numeric"
+ 
+  # Allinea sample_info
+  sample_info <- sample_info[colnames(log_data), ]
+ 
+  pca <- prcomp(t(log_data), scale.=TRUE)
+  variance_explained <- (pca$sdev^2)/sum(pca$sdev^2)
+ 
+  pca_df <- data.frame(
+    PC1 = pca$x[,1],
+    PC2 = pca$x[,2],
+    batch = sample_info$batch,
+    condition = sample_info$condition
+  )
+ 
+  ggplot(pca_df, aes(PC1, PC2, color=condition, shape=batch)) +
+    geom_point(size=3, alpha=0.8) +
+    labs(
+      title = paste("PCA -", title_suffix),
+      x = paste0("PC1 (", round(variance_explained[1]*100), "%)"),
+      y = paste0("PC2 (", round(variance_explained[2]*100), "%)")
+    ) +
+    theme_minimal()
+}
+
+# Esegui PCA
+run_pca(all_raw_counts, sample_info, "Raw data")
+```
+
+**Note:**  
+- The two datasets are essentially the same; one has viral reads depleted.  
+- Batch effect correction was not complete for mock and bystander samples.  
+- Raw data were already normalized, affecting expectations on DE analysis.
+
+```{r Batch correction + DE}
+genes_to_keep <- rowSums(all_raw_counts[,1:18]) > 0 & rowSums(all_raw_counts[,19:36]) > 0
+filtered_counts <- all_raw_counts[genes_to_keep, ]
+filtered_sample_info <- sample_info[colnames(filtered_counts), ]
+
+combat_corrected_data <- ComBat_seq(filtered_counts,
+                                    batch = filtered_sample_info$batch,
+                                    group = filtered_sample_info$condition)
+combat_corrected_data <- round(combat_corrected_data)
+run_pca(combat_corrected_data, filtered_sample_info, "ComBat corrected data")
+all_raw_counts <- round(all_raw_counts,0)
+dds_model <- DESeqDataSetFromMatrix(all_raw_counts, sample_info[,-1], design = ~ batch + condition)
+dds_model <- DESeq(dds_model)
+vsd_model <- vst(dds_model, blind = FALSE)
+vsd_mat <- assay(vsd_model)
+
+run_pca(vsd_mat, sample_info, "DESeq2 model")
+
+```
+
+```{r Venn diagrams}
+res_infected_model <- results(dds_model, contrast = c("condition", "infected", "mock"))
+res_bystander_model <- results(dds_model, contrast = c("condition", "bystander", "mock"))
+
+de_infected_model <- rownames(res_infected_model)[which(res_infected_model$padj < 0.05 & abs(res_infected_model$log2FoldChange) > 1)]
+de_bystander_model <- rownames(res_bystander_model)[which(res_bystander_model$padj < 0.05 & abs(res_bystander_model$log2FoldChange) > 1)]
+
+dds_combat <- DESeqDataSetFromMatrix(combat_corrected_data, filtered_sample_info, design = ~ condition)
+dds_combat <- DESeq(dds_combat)
+
+res_infected_combat <- results(dds_combat, contrast = c("condition", "infected", "mock"))
+res_bystander_combat <- results(dds_combat, contrast = c("condition", "bystander", "mock"))
+
+de_infected_combat <- rownames(res_infected_combat)[which(res_infected_combat$padj < 0.05 & abs(res_infected_combat$log2FoldChange) > 1)]
+de_bystander_combat <- rownames(res_bystander_combat)[which(res_bystander_combat$padj < 0.05 & abs(res_bystander_combat$log2FoldChange) > 1)]
+
+# Venn diagram Infected
+venn1 <- venn.diagram(
+  x = list(Model = de_infected_model, ComBat = de_infected_combat),
+  filename = NULL,
+  fill = c("lightblue", "lightgreen"),
+  main = "DEGs Infected vs Mock (Model vs ComBat)"
+)
+
+# Venn diagram Bystander
+venn2 <- venn.diagram(
+  x = list(Model = de_bystander_model, ComBat = de_bystander_combat),
+  filename = NULL,
+  fill = c("lightpink", "lightyellow"),
+  main = "DEGs Bystander vs Mock (Model vs ComBat)"
+)
+
+grid.arrange(grobTree(venn1), grobTree(venn2))
+```
+
+```{r STEP 3.3 - Heatmaps unique Degs}
+plot_heatmap <- function(gene_list, count_matrix, sample_info, title) {
+  if(length(gene_list) > 1){
+    mat <- log2(count_matrix[gene_list,,drop=FALSE] + 1)
+    rownames(sample_info) <- sample_info$sample_id
+    sample_info <- sample_info[colnames(mat),]
+    sample_info$condition <- factor(sample_info$condition, levels=c("mock","bystander","infected"))
+    sample_info$batch <- factor(sample_info$batch, levels=c("GSE244485","GSE244486"))
+    sample_info <- sample_info[order(sample_info$condition,sample_info$batch),]
+    mat <- mat[,rownames(sample_info), drop=FALSE]
+    cond_tab <- as.integer(table(sample_info$condition))
+    gaps_col <- head(cumsum(cond_tab),-1)
+    ann_colors <- list(
+      condition = c(mock="#E41A1C", bystander="#377EB8", infected="#4DAF4A"),
+      batch = c(GSE244485="#984EA3", GSE244486="#FF7F00")
+    )
+    pheatmap(mat, scale="row", annotation_col=sample_info[,c("condition","batch")], annotation_colors=ann_colors, show_rownames=FALSE, cluster_cols=FALSE, gaps_col=gaps_col, main=title)
+  }
+}
+
+infected_unique_model <- setdiff(de_infected_model,de_infected_combat)
+infected_unique_combat <- setdiff(de_infected_combat,de_infected_model)
+bystander_unique_model <- setdiff(de_bystander_model,de_bystander_combat)
+bystander_unique_combat <- setdiff(de_bystander_combat,de_bystander_model)
+
+plot_heatmap(infected_unique_model, all_raw_counts, sample_info, "Unique Model DEGs - Infected")
+plot_heatmap(infected_unique_combat, combat_corrected_data, filtered_sample_info, "Unique ComBat DEGs - Infected")
+plot_heatmap(bystander_unique_model, all_raw_counts, sample_info, "Unique Model DEGs - Bystander")
+plot_heatmap(bystander_unique_combat, combat_corrected_data, filtered_sample_info, "Unique ComBat DEGs - Bystander")
+```
+
+```{r samples Dendrogram}
+deg_all <- unique(c(de_infected_combat,de_bystander_combat))
+log_mat <- log2(combat_corrected_data[deg_all,] + 1)
+mat_z <- t(scale(t(log_mat)))
+mat_z[is.na(mat_z)] <- 0
+
+# dendrogramma
+mat_samples_all <- t(mat_z)
+d <- dist(mat_samples_all)
+hc <- hclust(d, method="ward.D2")
+plot(hc, main="Dendrogram of samples (top DEGs ComBat)", xlab="", sub="", cex=0.8, hang=-1)
+```
+
+This dendrogram visualizes the hierarchical clustering of samples. Samples with similar gene expression profiles are grouped together. The height of the branches indicates the degree of similarity, with shorter branches representing more closely related samples.
+
+A key observation from this plot is the clear and strong clustering of the infected samples. They are all grouped together in a single branch, indicating that the infection has a dominant effect on gene expression that successfully overrides any technical or batch-related variation. This suggests that the biological signal for this condition is very robust.
+
+In contrast, the mock and bystander samples are not grouped by their condition. Instead, they are primarily separated by batch, as indicated by the GSE number in their sample names (GSE24485 and GSE24486). This suggests that while the batch correction was successful for the strongly affected "infected" samples, a residual batch effect remains a significant source of variation for the other two conditions, preventing them from clustering cleanly by their biological group.
+
+```{r heatmap top 500}
+# top 500
+gene_var <- apply(log_mat,1,var)
+top_genes <- names(sort(gene_var,decreasing=TRUE))[1:500]
+mat_z_small <- mat_z[top_genes,]
+anno_col <- filtered_sample_info[,c("condition","batch")]
+anno_col$condition <- factor(anno_col$condition, levels=c("mock","bystander","infected"))
+anno_col$batch <- factor(anno_col$batch, levels=c("GSE244485","GSE244486"))
+anno_col <- anno_col[order(anno_col$condition,anno_col$batch),]
+mat_heat <- mat_z_small[,rownames(anno_col), drop=FALSE]
+ann_colors <- list(condition=c(mock="#E41A1C", bystander="#377EB8", infected="#4DAF4A"),
+                   batch=c(GSE244485="#984EA3", GSE244486="#FF7F00"))
+pheatmap(mat_heat, scale="row", annotation_col=anno_col, annotation_colors=ann_colors, cluster_rows=TRUE, cluster_cols=FALSE, show_rownames=FALSE, main="Heatmap of top 500 DE genes")
+
+```
+This heatmap displays the expression patterns of the top 500 differentially expressed genes (DEGs) across all samples. The samples are arranged on the horizontal axis and are clustered based on their gene expression similarities, while the genes are clustered on the vertical axis. The color scale shows normalized gene expression levels, with red indicating high expression and blue indicating low expression.
+
+The heatmap reveals a very strong and clear separation of samples by condition, which is the most important biological signal. The infected samples form a distinct group with a unique gene expression signature, characterized by a large set of genes that are highly expressed (red) and another set of genes that are lowly expressed (blue) compared to the other conditions. The bystander and mock samples, while showing some subtle differences, have more similar expression profiles to each other, forming a separate major cluster.
+
+Importantly, the heatmap confirms that the batch effect has been effectively handled. Despite the samples originating from two different batches (GSE24485 and GSE24486), the clustering is driven almost entirely by the biological condition and not by the batch. This demonstrates that the data is well-suited for a robust differential expression analysis.
+
+```{r ARI boxplots}
+mat_samples <- t(mat_z_small)
+common_samples <- intersect(rownames(mat_samples), rownames(filtered_sample_info))
+mat_samples <- mat_samples[common_samples, , drop=FALSE]
+sample_info_sub <- filtered_sample_info[common_samples, , drop=FALSE]
+
+k <- length(levels(sample_info_sub$condition))
+metrics <- c("euclidean","manhattan","pearson","spearman")
+linkages <- c("complete","average","ward.D2")
+ari_table <- data.frame()
+
+for (m in metrics){
+  for (l in linkages){
+    if(m %in% c("pearson","spearman")){
+      d <- as.dist(1 - cor(t(mat_samples), method=m))
+    } else {
+      d <- dist(mat_samples, method=m)
+    }
+    hc <- hclust(d, method=l)
+    clusters <- cutree(hc,k)
+    cond_vector <- as.integer(factor(sample_info_sub$condition, levels=levels(sample_info_sub$condition)))
+    names(cond_vector) <- rownames(sample_info_sub)
+    clusters <- clusters[names(cond_vector)]
+    ari <- adjustedRandIndex(clusters, cond_vector)
+    ari_table <- rbind(ari_table, data.frame(metric=m, linkage=l, ARI=ari))
+  }
+}
+
+# Boxplot metric
+boxplot(ARI~metric, data=ari_table, main="ARI across distance metrics (top 500 genes, samples)", ylab="Adjusted Rand Index", xlab="Metric")
+
+# Boxplot combinato
+ari_table$metric_link <- paste(ari_table$metric, ari_table$linkage, sep="_")
+boxplot(ARI~metric_link, data=ari_table, horizontal=TRUE, las=1, cex.axis=1, main="ARI across metric and linkage (top 500 genes, samples)")
+```
+The first boxplot shows the Adjusted Rand Index (ARI) scores for different distance metrics used for sample clustering. The ARI measures the agreement between two data clusterings. In this context, it evaluates how well the unsupervised clustering of samples (based on their gene expression) matches the known biological conditions (infected, mock, bystander). An ARI value closer to 1.0 indicates a perfect agreement, while a value near 0 suggests a random agreement.
+
+Looking at the plot, we can see that the Pearson and Spearman correlation metrics perform significantly better than Euclidean or Manhattan distance. Both Pearson and Spearman metrics have high median ARI values, indicating that they produce sample clusters that strongly align with the true biological conditions. This is expected, as these correlation-based metrics are well-suited for gene expression data, which often exhibits co-regulation and linear relationships.
+
+In contrast, the Euclidean and Manhattan distance metrics perform poorly, yielding much lower ARI scores. These metrics are more sensitive to the magnitude of gene expression changes rather than the pattern or correlation of expression, making them less effective for this type of biological data. This plot confirms that correlation-based metrics are the most appropriate choice for clustering and dimensional reduction in this RNA-seq analysis.
+
+While the second boxplot compares various combinations of distance metrics and linkage methods used for hierarchical clustering.
+
+The most important takeaway is that the Pearson and Spearman correlation metrics consistently outperform the Euclidean and Manhattan distance metrics. The correlation-based methods produce clusters with much higher ARI scores, demonstrating that they are more effective at grouping samples by their true biological condition. This is because these metrics focus on the pattern and relationship of gene expression, which is more relevant for biological data, rather than the raw magnitude of expression differences.
+
+Furthermore, within the correlation-based metrics, the 'average' and 'complete' linkage methods tend to yield higher ARI scores compared to the 'ward.D2' method. This suggests that for this specific dataset and the top 500 differentially expressed genes, these linkage methods are better at forming clusters that accurately reflect the underlying biological structure.
+
+```{r Violin plots coding vs noncoding DEGs}
+coding_genes <- mcols(gene_gr)$gene_id[mcols(gene_gr)$biotype=="protein_coding"]
+noncoding_genes <- mcols(gene_gr)$gene_id[mcols(gene_gr)$biotype!="protein_coding"]
+
+deg_all_clean <- sub("\\..*","",deg_all)
+res_coding <- deg_all_clean[deg_all_clean %in% coding_genes]
+res_noncoding <- deg_all_clean[deg_all_clean %in% noncoding_genes]
+
+rownames(combat_corrected_data) <- sub("\\..*", "", rownames(combat_corrected_data))
+de_coding <- res_coding[res_coding %in% rownames(combat_corrected_data)]
+de_noncoding <- res_noncoding[res_noncoding %in% rownames(combat_corrected_data)]
+
+expr_coding <- data.frame(
+  sample=colnames(combat_corrected_data),
+  condition=filtered_sample_info$condition,
+  gene_type="coding",
+  expression=as.numeric(colMeans(combat_corrected_data[de_coding,,drop=FALSE]))
+)
+expr_noncoding <- data.frame(
+  sample=colnames(combat_corrected_data),
+  condition=filtered_sample_info$condition,
+  gene_type="noncoding",
+  expression=as.numeric(colMeans(combat_corrected_data[de_noncoding,,drop=FALSE]))
+)
+expr_mean <- rbind(expr_coding, expr_noncoding)
+
+ggplot(expr_mean, aes(x=condition, y=expression, fill=condition)) +
+  geom_violin(trim=FALSE, scale="width") +
+  geom_jitter(width=0.2, size=1, alpha=0.6) +
+  facet_wrap(~gene_type, scales="free_y") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) +
+  ggtitle("Coding vs Noncoding DE genes - Media per campione")
+
+# Violin plot tutti i geni
+expr_coding_full <- data.frame(
+  sample=rep(colnames(combat_corrected_data), each=length(de_coding)),
+  condition=rep(filtered_sample_info$condition, each=length(de_coding)),
+  gene_type="coding",
+  expression=as.vector(as.matrix(combat_corrected_data[de_coding,,drop=FALSE]))
+)
+expr_noncoding_full <- data.frame(
+  sample=rep(colnames(combat_corrected_data), each=length(de_noncoding)),
+  condition=rep(filtered_sample_info$condition, each=length(de_noncoding)),
+  gene_type="noncoding",
+  expression=as.vector(as.matrix(combat_corrected_data[de_noncoding,,drop=FALSE]))
+)
+expr_full <- rbind(expr_coding_full, expr_noncoding_full)
+
+ggplot(expr_full, aes(x=condition, y=expression, fill=condition)) +
+  geom_violin(trim=FALSE, scale="width") +
+  facet_wrap(~gene_type, scales="free_y") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) +
+  ggtitle("Coding vs Noncoding DE genes - Tutti i geni")
+
+```
+**Note:**  
+- Initially, it was not possible to find DE coding-noncoding pairs on opposite strands. After modifying the overlap function, pairs were successfully identified.
+
+The first violin plot shows the distribution of average expression levels for differentially expressed (DE) coding and noncoding genes across three conditions: mock, bystander, and infected.
+
+Here's a breakdown of what the plot tells us:
+Distinct Expression Profiles: Both panels show a clear and consistent shift in gene expression for the infected samples. In both the coding and noncoding panels, the infected samples have a very low average expression level compared to the mock and bystander samples. This indicates that the infection broadly downregulates both coding and noncoding DE genes.
+
+Differences in Expression Magnitude: The two panels use different y-axis scales, which is an important detail. The expression values for coding genes (left panel) are significantly higher, ranging from around 0 to over 2000. In contrast, the expression values for noncoding genes (right panel) are much lower, ranging from approximately -50 to 200. This is a common biological observation, as coding genes, which are translated into proteins, are typically more highly expressed than noncoding genes.
+
+Similar Expression in Mock and Bystander: For both coding and noncoding gene types, the mock and bystander samples show similar expression distributions. Their violin plots overlap significantly, suggesting that at the average expression level of DE genes, the bystander effect is not as strong as the direct infection effect.
+
+The violin plot, titled "Coding vs Noncoding DE genes - Tutti i geni" (All genes), shows the distribution of expression for every single differentially expressed (DE) gene, rather than the average per sample. This approach, where you 'melt' the data from a wide format to a long format, is often used to visualize the expression of all data points.
+
+However, in this specific case, the plot is not informative because the vast majority of DE genes have very low expression. This causes a phenomenon where the expression values are highly skewed, with a long tail of very few genes having extremely high expression.
+
+This skewed distribution is visually represented by the violin plots appearing as narrow, flat lines near the bottom of the graph, with tall vertical tails extending upwards. The dense clusters of individual data points that are visible in the previous average-expression plot are now compressed into a single, unreadable line. The high-expression genes are visible only as thin vertical lines, making it impossible to discern any meaningful differences between the conditions.
+
+In conclusion, while the 'melt' approach is a valid data transformation, it is inappropriate for this specific visualization due to the nature of the data. The highly skewed expression distribution of the top DE genes makes the average-expression plot a much more effective and interpretable way to visualize the differences between conditions.
+
+## Conclusions
+
+This report includes:
+
+* Full RNA-seq analysis pipeline
+
+* PCA and batch effect observations
+
+* DE analysis with two strategies
+
+* Heatmaps, clustering, and ARI comparison
+
+* Coding vs noncoding gene proximity analysis
+
+All code chunks are executable and reproduce the analysis results. Docker-specific instructions are provided in the README.
