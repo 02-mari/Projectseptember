@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends r-base r-base-d
 
 4. Install R Packages
 
-We install commonly used CRAN packages and Bioconductor packages including ComplexHeatmap:
+We install commonly used CRAN packages and Bioconductor packages:
 ```{dockerfile}
 RUN R -e "install.packages(c('ggplot2','VennDiagram','pheatmap','circlize','RColorBrewer','cluster','mclust','grid','reshape2','dplyr','data.table','BiocManager'), repos='https://cloud.r-project.org')"
 
